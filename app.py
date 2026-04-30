@@ -132,6 +132,7 @@ with st.expander("📚 Codex Notları & Karar Mantığı", expanded=False):
 - ✅ **PASS** — tüm katmanlar geçti
 - 🔴 **PHD_INELIGIBLE** — PhD/defense > deadline
 - 🔴 **FAIL_FORMAL** — severe page overflow (segmenter başarısız)
+- 🔴 **FAIL_THEMATIC** — proposal'da hiç anchor yok (gerçekten alakasız)
 - 🟠 **DOUBT** — thematic/mobility belirsiz, manual review
 - 🟡 **INSUFFICIENT_EVIDENCE** — image-based PDF, OCR gerekli
 
@@ -285,14 +286,25 @@ if uploaded:
     st.header("🔍 Per-File Audit View")
     for r in results:
         decision = r["final"]["decision"]
-        emoji = {"PASS": "✅", "DOUBT": "🟠", "FAIL_FORMAL": "🔴",
-                 "FAIL_THEMATIC": "🔴", "PHD_INELIGIBLE": "🔴",
-                 "INSUFFICIENT_EVIDENCE": "🟡", "DOUBT_MOBILITY": "🟠",
-                 "PARSE_ERROR": "⚫"}.get(decision, "⚪")
+        emoji = {
+            "PASS": "✅",
+            "DOUBT": "🟠",
+            "DOUBT_MOBILITY": "🟠",
+            "FAIL_FORMAL": "🔴",
+            "FAIL_THEMATIC": "🔴",
+            "PHD_INELIGIBLE": "🔴",
+            "INSUFFICIENT_EVIDENCE": "🟡",
+            "PARSE_ERROR": "⚫",
+        }.get(decision, "⚪")
+        
         with st.expander(f"{emoji} **{r['filename']}** → `{decision}`"):
             if r.get("error"):
                 st.error(r["error"])
                 continue
+            
+            # Manual review banner
+            if r["final"].get("manual_review"):
+                st.info("🔍 **Manual review recommended** — bu dosya yorum gerektiren bir alanda DOUBT/INSUFFICIENT_EVIDENCE verdi. Codex felsefesi gereği auto-FAIL yerine manual review işaretlendi.")
             
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -316,7 +328,11 @@ if uploaded:
             
             if show_raw_text:
                 with st.expander("Raw extracted text"):
-                    st.text_area("", get_full_text(r["pdf_data"])[:5000], height=300)
+                    st.text_area(
+                        "Extracted text (first 5000 chars)",
+                        get_full_text(r["pdf_data"])[:5000],
+                        height=300
+                    )
 else:
     st.info("👆 Upload 5–10 PDF files to begin triage")
     st.markdown("""
@@ -331,4 +347,10 @@ else:
     - **Hard FAIL** sadece deterministic ihlallerde (PhD date, severe overflow)
     - **DOUBT** → manual review için işaretlenir
     - **INSUFFICIENT_EVIDENCE** → OCR önerisi
-    """
+    
+    ### 🧪 Calibration Tips
+    - Default değerler **historical eligible 3 dosyada test edildi** (METU-004, 025, 040)
+    - Aşırı katı sonuç alıyorsan: thematic doubt threshold'u düşür
+    - Aşırı toleranslı sonuç alıyorsan: severe overflow factor'u düşür
+    - Image-based PDF için: OCR önerisini takip et
+    """)
