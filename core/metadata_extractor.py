@@ -1,10 +1,18 @@
-"""Application metadata extraction (regex-based)."""
+"""Application metadata extraction (regex-based).
+
+Extracts: applicant name, project title, application ID, nationality,
+current institution, ethics tables presence, English signal.
+
+FIX: applicant_name regex no longer swallows 'Application ID: <UUID>'.
+FIX: _clean_value is field-aware so application_id (which IS a UUID) is preserved.
+"""
 import re
 from typing import Dict
 
 
 METADATA_PATTERNS = {
     "applicant_name": [
+        # Stop at • (bullet) or | (pipe) to avoid swallowing 'Application ID: ...'
         re.compile(r"applicant(?:\s+name)?\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
         re.compile(r"name\s+and\s+surname\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
     ],
@@ -30,6 +38,7 @@ ETHICS_PATTERNS = [
     re.compile(r"security\s+(?:scrutiny|self.?assessment|issues)", re.IGNORECASE),
 ]
 
+# Common English words for English-language detection
 ENGLISH_WORDS = set([
     "the", "and", "of", "to", "in", "is", "that", "for", "with", "this",
     "research", "project", "proposal", "objective", "method", "analysis",
@@ -47,7 +56,8 @@ _UUID_TAIL_RE = re.compile(
 def _clean_value(raw: str, field_name: str = "") -> str:
     """Strip bullets, pipes, trailing 'Application ID', and UUIDs from name-like fields.
     
-    field_name: when 'application_id', UUID stripping is SKIPPED (UUID IS the value).
+    field_name: when 'application_id', UUID stripping is SKIPPED
+                (because the UUID IS the value we want to keep).
     """
     if not raw:
         return raw
@@ -71,8 +81,10 @@ def _first_match(text: str, patterns, field_name: str = "") -> str:
         m = pat.search(text)
         if m:
             value = m.group(1).strip()
+            # Trim trailing label-like fragments
             value = re.split(r"\s{2,}|\n", value)[0].strip()
             value = value.rstrip(".,;:")
+            # FIX: pass field_name so cleaner knows context
             value = _clean_value(value, field_name=field_name)
             if value and len(value) < 200:
                 return value
@@ -100,7 +112,7 @@ def extract_metadata(full_text: str) -> Dict:
     else:
         out["ethics_tables_present"] = "NO"
     
-    # English signal
+    # English signal — count common English words in first 5000 chars
     sample = full_text[:5000].lower()
     words = re.findall(r"\b[a-z]+\b", sample)
     if len(words) >= 50:
