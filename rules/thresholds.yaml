@@ -1,1 +1,31 @@
+deadline:
+  date: "2026-04-30"
+  time: "17:00"
+  timezone: "GMT+3"
 
+formal:
+  proposal_max_pages: 10
+  cv_max_pages: 5
+  tolerance_pages: 0
+
+phd:
+  date_formats:
+    - "%d/%m/%Y"
+    - "%d.%m.%Y"
+    - "%d-%m-%Y"
+    - "%Y-%m-%d"
+    - "%B %Y"
+    - "%b %Y"
+  keywords_en: ["defense", "viva", "phd awarded", "doctorate", "thesis defense", "successfully defended"]
+  keywords_tr: ["savunma", "doktora", "tez savunmasi", "doktora derecesi"]
+
+thematic:
+  green_keywords: ["green transition", "renewable", "sustainability", "climate", "circular economy", "decarbonization"]
+  blue_keywords: ["blue economy", "marine", "ocean", "maritime", "aquaculture", "coastal"]
+  fail_threshold: 0.2
+  doubt_threshold: 0.4
+  pass_threshold: 0.6
+
+mobility:
+  turkey_keywords: ["turkey", "turkiye", "türkiye", "istanbul", "ankara", "izmir", "bursa", "antalya"]
+  max_turkey_months_last_3y: 12
