@@ -57,8 +57,10 @@ with st.sidebar:
             api_key = st.text_input("OpenRouter API Key", type="password",
                 help="https://openrouter.ai/keys",
                 placeholder="sk-or-v1-...")
+            if api_key:
+                st.info(f"🔑 Key entered manually (length: {len(api_key)})")
         else:
-            st.success("🔑 API key loaded from secrets")
+            st.success(f"🔑 API key loaded from secrets (length: {len(api_key)})")
         
         model = st.selectbox(
             "Model",
@@ -148,6 +150,8 @@ if uploaded:
     
     if enable_llm and not api_key:
         st.warning("⚠️ LLM enabled but no API key — scientific scores will be 0. Disable LLM or provide a key.")
+    elif enable_llm and api_key:
+        st.info(f"🤖 LLM active: `{model}`")
     
     st.success(f"✅ {len(uploaded)} file(s) loaded.")
     
@@ -207,12 +211,15 @@ if uploaded:
         # Scientific assessment (LLM)
         scientific = None
         if enable_llm and api_key:
-            scientific = assess_scientific_quality(
-                proposal_text or full_text[:10000],
-                cv_text=cv_text,
-                api_key=api_key,
-                model=model,
-            )
+            with st.spinner(f"🤖 LLM assessing {f.name}…"):
+                scientific = assess_scientific_quality(
+                    proposal_text or full_text[:10000],
+                    cv_text=cv_text,
+                    api_key=api_key,
+                    model=model,
+                )
+                if scientific.get("llm_error"):
+                    st.error(f"LLM error for {f.name}: {scientific['llm_error']}")
         
         final = aggregate_decision(phd, formal, thematic, mobility)
         
@@ -357,7 +364,6 @@ if uploaded:
     bucket_df = pd.DataFrame(list(decision_counts.items()), columns=["Bucket", "Count"])
     st.dataframe(bucket_df, use_container_width=True)
     
-    # Common formal issues
     formal_issues_all = []
     for r in results:
         formal_issues_all.extend(r["formal"].get("warnings", []) + r["formal"].get("issues", []))
@@ -367,7 +373,6 @@ if uploaded:
         for issue, cnt in Counter(formal_issues_all).most_common(5):
             st.markdown(f"- {issue} ({cnt} dosya)")
     
-    # Common thematic issues
     thematic_fails = [r["filename"] for r in results if r["thematic"].get("decision") == "FAIL"]
     thematic_doubts = [r["filename"] for r in results if r["thematic"].get("decision") == "DOUBT"]
     if thematic_fails or thematic_doubts:
@@ -377,7 +382,6 @@ if uploaded:
         if thematic_doubts:
             st.markdown(f"- DOUBT ({len(thematic_doubts)}): {', '.join(thematic_doubts)}")
     
-    # Common mobility issues
     mob_doubts = [r["filename"] for r in results if r["mobility"].get("status") == "DOUBT"]
     mob_insufficient = [r["filename"] for r in results if r["mobility"].get("status") == "INSUFFICIENT_EVIDENCE"]
     if mob_doubts or mob_insufficient:
@@ -408,7 +412,8 @@ if uploaded:
     for r in results:
         sci = r.get("scientific") or {}
         if (r["formal"].get("decision") == "PASS" 
-            and sci.get("scientific_quality_band") in ("WEAK", "VERY_WEAK")):
+            and sci.get("scientific_quality_band") in ("WEAK", "VERY_WEAK")
+            and sci.get("llm_used")):
             qa_findings["formally_ok_but_scientifically_weak"].append(r["filename"])
         
         if (r["thematic"].get("decision") in ("PASS", "DOUBT")
@@ -449,33 +454,3 @@ if uploaded:
 
 else:
     st.info("👆 Upload 5–10 PDF files to begin triage")
-    st.markdown("""
-    ### 📖 Hızlı Başlangıç
-    1. **Sol sidebar**'dan LLM'i aç ve API key gir (veya Streamlit Secrets'a `OPENROUTER_API_KEY` ekle)
-    2. Default kalibrasyon değerleri historical eligible 3 dosyada test edildi
-    3. **5–10 PDF** yükle (drag-and-drop veya Browse)
-    4. Sonuçları gör: Part 1 (TSV) → Part 2 (per-file) → Part 3 (batch) → Part 4 (QA)
-    5. **Excel** veya **TSV** olarak indir
-    
-    ### 🔑 API Key Eklemek
-    **Yöntem 1 — Streamlit Secrets (önerilen):**
-    1. Streamlit Cloud → uygulamanın sayfası → ⚙️ Settings → Secrets
-    2. Şunu yapıştır:
-    ```toml
-    OPENROUTER_API_KEY = "sk-or-v1-..."
-    ```
-    3. Save → uygulama otomatik restart eder
-    
-    **Yöntem 2 — Sidebar'dan elle gir:**
-    Her oturumda yeniden gir.
-    
-    ### 💰 Maliyet
-    - `gpt-4o-mini` → ~\$0.02/batch (10 dosya)
-    - `gpt-4o` → ~\$0.30/batch
-    - `gemini-2.0-flash-exp:free` → **\$0** (rate-limit olabilir)
-    
-    ### ⚖️ Karar Felsefesi
-    - **Hard FAIL** sadece deterministic ihlallerde
-    - **DOUBT / MANUAL_REVIEW** → yorum gerektiren her şey
-    - **INSUFFICIENT_EVIDENCE** → image-based PDF, OCR önerisi
-    """)
