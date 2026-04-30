@@ -14,8 +14,15 @@ Scoring:
 - Direct hits (Green/Blue): up to 1.0 contribution (15% per term, cap 1.0)
 - Indirect hits: up to 0.4 contribution (6% per term, cap 0.4)
 - Combined score clamped to [0.0, 1.0] → multiplied by 100 for display
+
+FIX (word-boundary):
+- Pre-compiled regex with \b word boundaries
+- Prevents false positives like "carbon" matching "carbonate",
+  "mpa" matching MPa pressure unit, "ev" matching "every", etc.
+- Ambiguous short acronyms removed where full forms exist
 """
-from typing import Dict, List
+import re
+from typing import Dict, List, Tuple, Pattern
 
 
 # =========================================================================
@@ -69,7 +76,9 @@ GREEN_TERMS = [
     "energy flexibility", "energy transition",
     
     # --- Critical raw materials & strategic autonomy ---
-    "critical raw materials", "crm", "critical raw material",
+    # NOTE: removed "crm", "cdr", "dac" (ambiguous standalone acronyms;
+    # full forms below already provide coverage)
+    "critical raw materials", "critical raw material",
     "strategic autonomy", "strategic raw materials",
     "non-critical element", "non-critical elements",
     "abundant element", "abundant elements", "earth-abundant",
@@ -77,27 +86,29 @@ GREEN_TERMS = [
     "secondary raw materials", "urban mining",
     
     # --- Industrial decarbonization ---
+    # NOTE: kept "ccs" and "ccus" — these are specific enough with word-boundary
     "low-carbon", "low carbon", "low-emission",
     "green steel", "green cement", "green chemistry",
     "carbon capture", "ccs", "ccus", "carbon storage",
-    "carbon utilization", "carbon dioxide removal", "cdr",
-    "direct air capture", "dac", "industrial symbiosis",
+    "carbon utilization", "carbon dioxide removal",
+    "direct air capture", "industrial symbiosis",
     "clean industry", "green manufacturing",
     
     # --- Mission: Adaptation to Climate Change ---
-    "climate adaptation", "adaptation strategy", "climate risk",
+    "adaptation strategy", "climate risk",
     "disaster risk reduction", "drought management",
     "flood management", "heatwave", "extreme weather",
     "climate vulnerability", "early warning system",
     "resilient infrastructure", "climate-proof",
     
     # --- Mission: Climate-Neutral and Smart Cities ---
+    # NOTE: removed standalone "sump" (engineering term ambiguity)
     "climate-neutral cities", "smart city", "smart cities",
     "urban transition", "sustainable city", "green city",
     "urban green", "green building", "green construction",
     "passive house", "near-zero energy building", "nzeb",
     "renovation wave", "urban planning", "sustainable urban mobility",
-    "sump", "15-minute city",
+    "15-minute city",
     
     # --- Mission: A Soil Deal for Europe ---
     "soil health", "healthy soil", "soil deal",
@@ -130,10 +141,12 @@ BLUE_TERMS = [
     "sustainable blue economy", "blue deal", "blue carbon",
     
     # --- Marine ecosystems ---
+    # NOTE: removed "mpa" (false positive: MPa = megapascal pressure unit)
+    # and "msp" (ambiguous); full forms retained
     "marine", "marine ecosystem", "marine biodiversity",
     "marine environment", "marine habitat", "marine pollution",
-    "marine conservation", "marine spatial planning", "msp",
-    "marine protected area", "mpa", "marine litter",
+    "marine conservation", "marine spatial planning",
+    "marine protected area", "marine litter",
     "marine renewable", "marine biotechnology",
     
     # --- Ocean ---
@@ -164,12 +177,11 @@ BLUE_TERMS = [
     "water-energy nexus",
     
     # --- Marine pollution / litter ---
-    "marine pollution", "marine debris", "ghost net",
+    "marine debris", "ghost net",
     "plastic in ocean", "ocean plastic", "marine plastic",
     
     # --- Marine renewable energy ---
-    "tidal energy", "wave energy", "marine energy",
-    "offshore renewable", "offshore wind", "floating wind",
+    "marine energy", "offshore renewable", "floating wind",
 ]
 
 
@@ -183,7 +195,6 @@ INDIRECT_TERMS = [
     
     # --- Pollution / quality ---
     "pollution", "pollutant", "contamination", "waste",
-    "water quality", "air quality", "soil quality",
     "biodegradable", "non-toxic", "ecotoxicology",
     
     # --- Governance & policy ---
@@ -198,8 +209,9 @@ INDIRECT_TERMS = [
     "paradigm shift", "innovation system",
     
     # --- Equity & justice ---
+    # NOTE: removed "ldc" (ambiguous); "least developed countries" retained
     "global south", "developing countries", "developing country",
-    "least developed countries", "ldc", "low-income country",
+    "least developed countries", "low-income country",
     "equity", "equality", "justice", "environmental justice",
     "climate justice", "energy justice", "social justice",
     "intersectionality", "marginalized", "vulnerable communities",
@@ -235,6 +247,29 @@ INDIRECT_TERMS = [
 ]
 
 
+# =========================================================================
+# WORD-BOUNDARY PATTERN COMPILATION (FIX)
+# =========================================================================
+def _compile_patterns(terms: List[str]) -> List[Tuple[str, Pattern]]:
+    """Pre-compile each term as a word-boundary regex.
+    
+    Word boundaries (\\b) prevent substring false positives:
+      ✗ Old: 'carbon' in 'carbonate' → True (wrong)
+      ✓ New: re.search(r'\\bcarbon\\b', 'carbonate') → None
+    
+    Hyphens are correctly handled because re.escape converts '-' to '\\-'
+    and \\b matches between word chars and non-word chars (including hyphens):
+      ✓ \\blow-carbon\\b matches 'low-carbon' but not 'ultralow-carbon'
+    """
+    return [(t, re.compile(r"\b" + re.escape(t) + r"\b")) for t in terms]
+
+
+# Compile once at module load (called once, used per-document)
+_GREEN_PATTERNS = _compile_patterns(GREEN_TERMS)
+_BLUE_PATTERNS = _compile_patterns(BLUE_TERMS)
+_INDIRECT_PATTERNS = _compile_patterns(INDIRECT_TERMS)
+
+
 def score_thematic(
     proposal_text: str,
     pass_threshold: float = 0.6,
@@ -251,8 +286,12 @@ def score_thematic(
     Codex #6 fix: weak signals → DOUBT (not auto-FAIL).
     Hard FAIL only when text is meaningful AND ZERO anchors found.
     
-    FIX: combined score clamped to [0.0, 1.0] so *100 conversion never exceeds 100.
-    Coverage expanded to Horizon Europe Mission Areas (Aug 2025).
+    FIX (score cap): combined score clamped to [0.0, 1.0] so *100 conversion
+    in the export layer can never exceed 100.
+    
+    FIX (word-boundary): substring matching replaced with \\b regex matching
+    to prevent false positives (e.g., 'mpa' matching 'MPa' pressure unit,
+    'carbon' matching 'carbonate', 'ev' matching 'every').
     """
     text = (proposal_text or "").strip()
     
@@ -269,12 +308,10 @@ def score_thematic(
     
     text_lower = text.lower()
     
-    # Use word-boundary-ish matching: term in text_lower
-    # (Multi-word terms naturally word-bounded; single words may catch substrings
-    # but lists are curated to avoid false positives like "carbonate" matching "carbon")
-    green_hits = sorted(set(t for t in GREEN_TERMS if t in text_lower))
-    blue_hits = sorted(set(t for t in BLUE_TERMS if t in text_lower))
-    indirect_hits = sorted(set(t for t in INDIRECT_TERMS if t in text_lower))
+    # FIX: word-boundary regex matching (replaces simple `t in text_lower`)
+    green_hits = sorted({t for t, pat in _GREEN_PATTERNS if pat.search(text_lower)})
+    blue_hits = sorted({t for t, pat in _BLUE_PATTERNS if pat.search(text_lower)})
+    indirect_hits = sorted({t for t, pat in _INDIRECT_PATTERNS if pat.search(text_lower)})
     
     direct_count = len(green_hits) + len(blue_hits)
     indirect_count = len(indirect_hits)
