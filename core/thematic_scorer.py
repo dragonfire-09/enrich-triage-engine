@@ -40,6 +40,9 @@ def score_thematic(
     
     Codex #6 fix: weak signals → DOUBT (not auto-FAIL).
     Hard FAIL only when text is meaningful AND ZERO anchors found.
+    
+    FIX: combined score is now clamped to [0.0, 1.0] so the *100 conversion
+    in the export layer can never exceed 100.
     """
     text = (proposal_text or "").strip()
     
@@ -66,9 +69,8 @@ def score_thematic(
     direct_score = min(1.0, direct_count * 0.15)
     indirect_score = min(0.4, indirect_count * 0.06)
     
-    # --- FIX: clamp combined score to [0.0, 1.0] so *100 conversion never exceeds 100 ---
+    # FIX: clamp combined score to [0.0, 1.0]
     score = round(min(1.0, direct_score + indirect_score), 2)
-    # --- end fix ---
     
     total_hits = direct_count + indirect_count
     
