@@ -79,7 +79,8 @@ if uploaded:
             phd = extract_phd_evidence(full_text, DEADLINE)
             formal = check_formal(spans, full_text)
             thematic = score_thematic(proposal_text or full_text)
-            mobility = parse_mobility(cv_text or full_text, DEADLINE, mobility_lookback)
+            # NEW: pass full_text as fallback for mobility
+            mobility = parse_mobility(cv_text, DEADLINE, mobility_lookback, full_text=full_text)
             final = aggregate_decision(phd, formal, thematic, mobility)
             
             results.append({
