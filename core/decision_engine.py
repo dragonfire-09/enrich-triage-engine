@@ -1,4 +1,9 @@
-"""Final decision aggregation with Turkish bucket names per system prompt."""
+"""Final decision aggregation with Turkish bucket names per system prompt.
+
+FIX: aggregate_decision now accepts an optional `scientific` dict and
+forces MANUAL_REVIEW when scientific quality is WEAK or weighted_total < 50.
+Backward compatible: legacy 4-parameter calls still work unchanged.
+"""
 from typing import Dict, Optional
 
 
@@ -11,11 +16,9 @@ BUCKET_MOBILITY_DOUBT = "MOBILITY_DOUBT"
 BUCKET_PASS = "PASS"
 BUCKET_MANUAL = "MANUAL_REVIEW"
 
-# --- FIX: scientific quality thresholds ---
-# Bands below this band, OR weighted_total below this score → MANUAL_REVIEW
+# Scientific quality gate thresholds
 WEAK_BANDS = {"WEAK", "VERY_WEAK", "POOR"}
-SCIENTIFIC_MIN_TOTAL = 50.0  # weighted_total_100 below this → MANUAL_REVIEW
-# --- end fix ---
+SCIENTIFIC_MIN_TOTAL = 50.0
 
 
 def aggregate_decision(
@@ -23,25 +26,24 @@ def aggregate_decision(
     formal: Dict,
     thematic: Dict,
     mobility: Dict,
-    scientific: Optional[Dict] = None,  # FIX: new optional parameter
+    scientific: Optional[Dict] = None,
 ) -> Dict:
     """Combine all layer decisions per system-prompt bucket priority.
     
-    Priority order (per system prompt):
+    Priority order:
       1. PhD clearly fails → PHD_UYUMSUZ
       2. Thematic clearly fails → TEMATIK_UYUMSUZ
       3. Formal clearly fails → FORMAL_UYUMSUZ
       4. Mobility clearly fails → MOBILITE_UYUMSUZ
       5. Mobility uncertain → MOBILITY_DOUBT
       6. Evidence insufficient → MANUAL_REVIEW
-      7. Scientific quality WEAK → MANUAL_REVIEW   (FIX: new gate)
+      7. Scientific quality WEAK → MANUAL_REVIEW   (FIX)
       8. Else → PASS
     
     Parameters:
-      scientific: optional dict with keys {"band", "weighted_total_100"}.
-                  If None, the scientific quality gate is skipped (legacy behavior).
+      scientific: optional dict {"band": str, "weighted_total_100": float}.
+                  If None, the scientific gate is skipped (legacy behavior).
     """
-    reasons = []
     
     # 1. PhD checks
     if phd.get("found") is False:
@@ -77,7 +79,7 @@ def aggregate_decision(
             "manual_review": False
         }
     
-    # 4-5. Mobility checks
+    # 4. Mobility clearly fails
     mob_status = mobility.get("status", "PASS")
     if mob_status == "FAIL":
         return {
@@ -87,7 +89,7 @@ def aggregate_decision(
             "manual_review": False
         }
     
-    # 6. Evidence insufficient (any layer)
+    # 6. Evidence insufficient
     if mob_status == "INSUFFICIENT_EVIDENCE":
         return {
             "decision": BUCKET_MANUAL,
@@ -122,7 +124,7 @@ def aggregate_decision(
             "manual_review": True
         }
     
-    # --- FIX: 7. Scientific quality gate (only if scientific dict provided) ---
+    # 7. FIX: Scientific quality gate (only when scientific dict is provided)
     if scientific is not None:
         band = str(scientific.get("band", "") or "").strip().upper()
         try:
@@ -133,7 +135,7 @@ def aggregate_decision(
         if band in WEAK_BANDS:
             return {
                 "decision": BUCKET_MANUAL,
-                "primary_reason": f"Scientific quality WEAK (band={band}, total={total:.1f})",
+                "primary_reason": f"Scientific quality WEAK (band={band}, total={total:.1f}/100)",
                 "reasons": [
                     f"Weighted total {total:.1f}/100 below acceptable threshold",
                     "Low excellence/impact/implementation scores require human evaluator review",
@@ -147,7 +149,6 @@ def aggregate_decision(
                 "reasons": [f"Weighted total {total:.1f}/100 < {SCIENTIFIC_MIN_TOTAL}"],
                 "manual_review": True
             }
-    # --- end fix ---
     
     # 8. PASS
     return {
