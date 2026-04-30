@@ -1,10 +1,4 @@
-"""Green/Blue Transition thematic scoring.
-
-v2 (Codex #6 fix):
-  - FAIL only when text is meaningful AND zero anchors
-  - Weak signals → DOUBT (manual review), not auto-FAIL
-  - Image-based proposals → INSUFFICIENT_EVIDENCE
-"""
+"""Green/Blue Transition thematic scoring (parameterized)."""
 from typing import Dict, List
 
 
@@ -31,28 +25,33 @@ INDIRECT_TERMS = [
 ]
 
 
-def score_thematic(proposal_text: str) -> Dict:
+def score_thematic(
+    proposal_text: str,
+    pass_threshold: float = 0.6,
+    doubt_threshold: float = 0.3,
+    min_text_length: int = 300,
+) -> Dict:
     """Return thematic relevance score + decision.
     
-    Decision logic:
-      - text empty / image-based → INSUFFICIENT_EVIDENCE
-      - score >= 0.6 → PASS
-      - score >= 0.3 → DOUBT
-      - 0 < score < 0.3 → DOUBT (Codex #6: weak signals → manual review)
-      - score == 0 AND text is meaningful → FAIL (truly off-topic)
-      - score == 0 AND text is sparse → INSUFFICIENT_EVIDENCE
+    Parameters:
+      pass_threshold:  score >= this → PASS
+      doubt_threshold: score >= this AND < pass_threshold → DOUBT
+      min_text_length: under this many chars → INSUFFICIENT_EVIDENCE
+    
+    Codex #6 fix: weak signals → DOUBT (not auto-FAIL).
+    Hard FAIL only when text is meaningful AND ZERO anchors found.
     """
     text = (proposal_text or "").strip()
     
-    # Image-based / empty proposal
-    if len(text) < 300:
+    if len(text) < min_text_length:
         return {
             "score": 0.0,
             "decision": "INSUFFICIENT_EVIDENCE",
             "green_hits": [],
             "blue_hits": [],
             "indirect_hits": [],
-            "evidence": "Proposal text too short — possibly image-based, OCR may be required"
+            "evidence": f"Proposal text too short ({len(text)} chars) — possibly image-based, OCR may be required",
+            "thresholds_used": {"pass": pass_threshold, "doubt": doubt_threshold}
         }
     
     text_lower = text.lower()
@@ -70,16 +69,13 @@ def score_thematic(proposal_text: str) -> Dict:
     
     total_hits = direct_count + indirect_count
     
-    # Decision logic per Codex #6
-    if score >= 0.6:
+    if score >= pass_threshold:
         decision = "PASS"
-    elif score >= 0.3:
+    elif score >= doubt_threshold:
         decision = "DOUBT"
     elif total_hits >= 1:
-        # Some signal exists but weak → DOUBT, not FAIL
         decision = "DOUBT"
     else:
-        # Truly zero anchors in a meaningful text → FAIL
         decision = "FAIL"
     
     return {
@@ -88,5 +84,6 @@ def score_thematic(proposal_text: str) -> Dict:
         "green_hits": green_hits,
         "blue_hits": blue_hits,
         "indirect_hits": indirect_hits,
-        "evidence": f"Direct: {direct_count} | Indirect: {indirect_count}"
+        "evidence": f"Direct: {direct_count} | Indirect: {indirect_count}",
+        "thresholds_used": {"pass": pass_threshold, "doubt": doubt_threshold}
     }
