@@ -1,9 +1,9 @@
-"""Mobility timeline reconstruction — flexible country/location detection.
+"""Mobility timeline reconstruction.
 
-v4 fixes:
-  - Nationality alone is NOT a mobility signal (Codex #5 refinement)
-  - Falls back to full text only when CV is genuinely sparse
-  - Distinguishes side_signals (nationality, secondment) from time intervals
+v5 fixes:
+  - Undated Turkey mentions → DOUBT but with manual review (not hard fail)
+  - Excludes more boilerplate Country/Institution lines that are address-only
+  - Side signals stay informational
 """
 import re
 from datetime import datetime, timedelta
@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple, Optional
 TURKEY_TOKENS = [
     "turkey", "turkiye", "türkiye", "tr,", "(tr)", "türkiye'de", "turkiye'de",
     "istanbul", "ankara", "izmir", "bursa", "antalya",
-    "gaziantep", "konya", "kayseri", "eskisehir", "trabzon",
+    "gaziantep", "konya", "kayseri", "eskisehir", "eskişehir", "trabzon",
     "adana", "mersin", "samsun", "diyarbakir", "denizli", "miletus",
     "middle east technical", "metu ", "metu,", "metu.", "odtu", "odtü", "günam", "gunam",
     "bogazici", "boğaziçi", "bosphorus university",
@@ -40,14 +40,15 @@ SINGLE_DATE_PATTERN = re.compile(
 
 YEAR_PATTERN = re.compile(r"\b(19[89]\d|20\d{2})\b")
 
-# Patterns to EXCLUDE — these mention Turkey but aren't mobility signals
+# Lines that mention Turkey but are NOT mobility signals
 EXCLUDE_PATTERNS = [
     re.compile(r"nationalit(?:y|ies)\s*[:\-]", re.IGNORECASE),
     re.compile(r"citizenship\s*[:\-]", re.IGNORECASE),
     re.compile(r"passport\s*[:\-]", re.IGNORECASE),
     re.compile(r"country\s+of\s+(?:birth|origin)\s*[:\-]", re.IGNORECASE),
     re.compile(r"place\s+of\s+birth\s*[:\-]", re.IGNORECASE),
-    # Project title / abstract mentions
+    re.compile(r"^country\s*[:\-]", re.IGNORECASE),
+    re.compile(r"^institution\s*[:\-]", re.IGNORECASE),
     re.compile(r"project\s+title\s*[:\-]", re.IGNORECASE),
     re.compile(r"acronym\s*[:\-]", re.IGNORECASE),
     re.compile(r"keywords?\s*[:\-]", re.IGNORECASE),
@@ -64,8 +65,7 @@ def _has_turkey_signal(text: str) -> bool:
 
 
 def _is_excluded_line(line: str) -> bool:
-    """Skip lines that mention Turkey for non-mobility reasons."""
-    return any(p.search(line) for p in EXCLUDE_PATTERNS)
+    return any(p.search(line.strip()) for p in EXCLUDE_PATTERNS)
 
 
 def _parse_date_loose(s: str, default_dt: datetime) -> Optional[datetime]:
@@ -80,7 +80,6 @@ def _parse_date_loose(s: str, default_dt: datetime) -> Optional[datetime]:
 
 
 def _scan_intervals(text: str, reference_date: datetime, window_start: datetime) -> Tuple[List, List, List]:
-    """Scan text for Turkey-linked dated intervals. Skips excluded lines."""
     lines = text.split("\n")
     intervals = []
     evidence = []
@@ -137,26 +136,24 @@ def _scan_intervals(text: str, reference_date: datetime, window_start: datetime)
 
 
 def _collect_side_signals(full_text: str) -> List[str]:
-    """Non-mobility but Turkey-related signals (informational only)."""
     signals = []
     if not full_text:
         return signals
-    
     nat = NATIONALITY_PATTERN.search(full_text)
     if nat and _has_turkey_signal(nat.group(1)):
         signals.append(f"Nationality includes Turkey: {nat.group(1).strip()[:80]}")
-    
     sec = SECONDMENT_PATTERN.search(full_text)
     if sec and _has_turkey_signal(sec.group(0)):
         signals.append(f"Secondment in TR: {sec.group(0)[:100]}")
-    
     return signals
 
 
 def parse_mobility(cv_text: str, reference_date: datetime, lookback_years: int = 3, full_text: str = "") -> Dict:
     """Estimate Turkey months. Falls back to full_text if CV is sparse.
     
-    v4: Nationality alone is NOT a DOUBT trigger.
+    v5: undated Turkey mentions → soft DOUBT (manual review),
+        nationality alone → PASS,
+        truly empty CV → INSUFFICIENT_EVIDENCE.
     """
     window_start = reference_date - timedelta(days=365 * lookback_years)
     cv_text = cv_text or ""
@@ -173,13 +170,11 @@ def parse_mobility(cv_text: str, reference_date: datetime, lookback_years: int =
             raw_lines = raw_full
             fallback_used = True
         else:
-            # also use raw_lines from full text as informational
-            raw_lines = raw_lines or raw_full
+            raw_lines = list(set(raw_lines + raw_full))
     
     side_signals = _collect_side_signals(full_text)
     
-    # CV truly empty (image-based)
-    if not cv_meaningful and not intervals:
+    if not cv_meaningful and not intervals and not raw_lines:
         return {
             "turkey_months": None,
             "confidence": "none",
@@ -191,27 +186,22 @@ def parse_mobility(cv_text: str, reference_date: datetime, lookback_years: int =
             "needs_ocr": True
         }
     
-    # No intervals found
     if not intervals:
-        # raw_lines may exist (Turkey mentions without dates), but not nationality-type
         if raw_lines:
             return {
                 "turkey_months": None,
                 "confidence": "low",
-                "evidence": f"Turkey-linked but undated mentions: {' | '.join(raw_lines[:3])}",
+                "evidence": f"Turkey-linked but undated: {' | '.join(raw_lines[:3])}",
                 "status": "DOUBT",
                 "intervals": [],
                 "side_signals": side_signals,
                 "fallback_used": fallback_used,
                 "needs_ocr": False
             }
-        # Only side signals (nationality/secondment) — informational, NOT a DOUBT
         return {
             "turkey_months": 0,
             "confidence": "medium",
-            "evidence": "No Turkey-based work/education in last {}y. Side signals: {}".format(
-                lookback_years, " | ".join(side_signals) if side_signals else "none"
-            ),
+            "evidence": f"No Turkey-based work/education in last {lookback_years}y. Side signals: " + (" | ".join(side_signals) if side_signals else "none"),
             "status": "PASS",
             "intervals": [],
             "side_signals": side_signals,
@@ -219,7 +209,6 @@ def parse_mobility(cv_text: str, reference_date: datetime, lookback_years: int =
             "needs_ocr": False
         }
     
-    # Merge intervals
     intervals.sort()
     merged = [intervals[0]]
     for s, e in intervals[1:]:
