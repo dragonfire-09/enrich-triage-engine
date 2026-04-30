@@ -9,23 +9,24 @@ from typing import Dict
 
 METADATA_PATTERNS = {
     "applicant_name": [
-        re.compile(r"applicant(?:\s+name)?\s*[:\-]\s*([^\n]+)", re.IGNORECASE),
-        re.compile(r"name\s+and\s+surname\s*[:\-]\s*([^\n]+)", re.IGNORECASE),
+        # FIX: stop at • (bullet) or | (pipe) to avoid swallowing "Application ID: ..."
+        re.compile(r"applicant(?:\s+name)?\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
+        re.compile(r"name\s+and\s+surname\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
     ],
     "project_title": [
-        re.compile(r"project\s+title\s*[:\-]\s*([^\n]+)", re.IGNORECASE),
+        re.compile(r"project\s+title\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
     ],
     "application_id": [
         re.compile(r"application\s+id\s*[:\-]\s*([a-f0-9\-]{8,})", re.IGNORECASE),
         re.compile(r"\b([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b", re.IGNORECASE),
     ],
     "nationality": [
-        re.compile(r"nationalit(?:y|ies)\s*[:\-]\s*([^\n]+)", re.IGNORECASE),
+        re.compile(r"nationalit(?:y|ies)\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
     ],
     "current_institution": [
-        re.compile(r"current\s+institution\s*[:\-]\s*([^\n]+)", re.IGNORECASE),
-        re.compile(r"host\s+institution\s*[:\-]\s*([^\n]+)", re.IGNORECASE),
-        re.compile(r"organi[sz]ation\s*[:\-]\s*([^\n]+)", re.IGNORECASE),
+        re.compile(r"current\s+institution\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
+        re.compile(r"host\s+institution\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
+        re.compile(r"organi[sz]ation\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
     ],
 }
 
@@ -42,6 +43,28 @@ ENGLISH_WORDS = set([
     "however", "therefore", "furthermore", "moreover",
 ])
 
+# --- FIX: UUID pattern for trailing-ID cleanup ---
+_UUID_TAIL_RE = re.compile(
+    r"\s*(?:application\s*id\s*[:\-]?\s*)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}.*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_value(raw: str) -> str:
+    """Strip bullets, pipes, trailing 'Application ID', and UUIDs from any extracted field."""
+    if not raw:
+        return raw
+    # Cut at common end-of-name separators
+    for sep in ["•", "|", "  Application ID", "  application id", "\tApplication ID"]:
+        idx = raw.find(sep)
+        if idx > 0:
+            raw = raw[:idx]
+            break
+    # Strip trailing UUIDs (with optional "Application ID:" prefix)
+    raw = _UUID_TAIL_RE.sub("", raw)
+    return raw.strip(" \t\n\r:-•|")
+# --- end fix ---
+
 
 def _first_match(text: str, patterns) -> str:
     for pat in patterns:
@@ -51,6 +74,8 @@ def _first_match(text: str, patterns) -> str:
             # Trim trailing label-like fragments
             value = re.split(r"\s{2,}|\n", value)[0].strip()
             value = value.rstrip(".,;:")
+            # FIX: extra defensive cleanup
+            value = _clean_value(value)
             if value and len(value) < 200:
                 return value
     return "INSUFFICIENT_EVIDENCE"
@@ -77,7 +102,7 @@ def extract_metadata(full_text: str) -> Dict:
     else:
         out["ethics_tables_present"] = "NO"
     
-    # English signal — count common English words in first 2000 chars
+    # English signal — count common English words in first 5000 chars
     sample = full_text[:5000].lower()
     words = re.findall(r"\b[a-z]+\b", sample)
     if len(words) >= 50:
