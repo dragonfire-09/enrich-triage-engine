@@ -47,7 +47,6 @@ with st.sidebar:
     api_key = ""
     model = ""
     if enable_llm:
-        # API key — Secrets'tan veya manuel
         try:
             api_key = st.secrets.get("OPENROUTER_API_KEY", "")
         except Exception:
@@ -148,13 +147,81 @@ if uploaded:
         st.error("Maximum 10 files per batch.")
         st.stop()
     
+    # ─────────────────────────────────────────────────────
+    # PRE-FLIGHT — Önizleme & Onay
+    # ─────────────────────────────────────────────────────
+    st.success(f"✅ {len(uploaded)} dosya yüklendi.")
+    
+    # Yüklenen dosyaların özeti
+    with st.expander("📁 Yüklenen Dosyalar", expanded=True):
+        total_size = 0
+        for i, f in enumerate(uploaded, 1):
+            size_mb = f.size / (1024 * 1024)
+            total_size += size_mb
+            st.markdown(f"**{i}.** `{f.name}` — {size_mb:.1f} MB")
+        st.caption(f"📊 Toplam: {len(uploaded)} dosya, {total_size:.1f} MB")
+    
+    # LLM durum mesajı
     if enable_llm and not api_key:
-        st.warning("⚠️ LLM enabled but no API key — scientific scores will be 0. Disable LLM or provide a key.")
+        st.warning("⚠️ LLM açık ama API key yok — scientific skorlar 0 olacak. "
+                   "Sidebar'dan key gir veya LLM'i kapat.")
     elif enable_llm and api_key:
-        st.info(f"🤖 LLM active: `{model}`")
+        est_time_low = len(uploaded) * 5
+        est_time_high = len(uploaded) * 15
+        st.info(f"🤖 LLM hazır: `{model}` — Tahmini süre: ~{est_time_low}-{est_time_high} saniye")
+    else:
+        st.info("ℹ️ LLM kapalı — scientific skorlar atlanacak (sadece deterministic katmanlar çalışacak)")
     
-    st.success(f"✅ {len(uploaded)} file(s) loaded.")
+    # Aktif kalibrasyon özeti
+    with st.expander("⚙️ Aktif Kalibrasyon Özeti"):
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1:
+            st.markdown(f"""
+**📐 Segmentation**
+- Proposal cap: `{proposal_cap}p`
+- CV cap: `{cv_cap}p`
+- Severe overflow: `{severe_overflow}×`
+            """)
+        with cc2:
+            st.markdown(f"""
+**🌍 Mobility**
+- Lookback: `{mobility_lookback}y`
+- Max TR: `{max_turkey_months}mo`
+- Grace: `{doubt_grace}mo`
+            """)
+        with cc3:
+            st.markdown(f"""
+**🌱 Thematic**
+- PASS: `{thematic_pass}`
+- DOUBT: `{thematic_doubt}`
+- Template sens.: `{template_sensitivity}`
+            """)
     
+    # ═════════════════════════════════════════════════════
+    # 🚀 ANALİZE BAŞLA BUTONU
+    # ═════════════════════════════════════════════════════
+    st.divider()
+    
+    bcol1, bcol2, bcol3 = st.columns([1, 2, 1])
+    with bcol2:
+        start_analysis = st.button(
+            "🚀 Analize Başla",
+            type="primary",
+            use_container_width=True,
+            help="Tüm 7 katman triage pipeline'ını çalıştır"
+        )
+    
+    if not start_analysis:
+        st.info(
+            "👆 Yukarıdaki **'🚀 Analize Başla'** butonuna basarak triage'ı başlat.\n\n"
+            "💡 İstediğin zaman sidebar'dan kalibrasyon parametrelerini değiştirebilir, "
+            "yeni dosya ekleyebilir veya çıkarabilirsin. Buton'a basana kadar LLM tokenları harcanmayacak."
+        )
+        st.stop()  # Buton basılana kadar pipeline çalışmasın
+    
+    # ─────────────────────────────────────────────────────
+    # PIPELINE START
+    # ─────────────────────────────────────────────────────
     results = []
     progress = st.progress(0)
     status = st.empty()
@@ -251,6 +318,9 @@ if uploaded:
     progress.empty()
     status.empty()
     
+    # Tamamlanma mesajı
+    st.success(f"✅ Analiz tamamlandı — {len(results)} dosya işlendi")
+    
     # ============ BATCH SYNTHESIS ============
     st.header("📊 Batch Synthesis")
     decision_counts = {}
@@ -325,7 +395,6 @@ if uploaded:
             if sci and sci.get("evidence_gaps") and sci["evidence_gaps"] != "NONE":
                 st.markdown(f"**🔍 Evidence gaps:** {sci['evidence_gaps']}")
             
-            # Detail panels
             st.divider()
             d1, d2, d3 = st.columns(3)
             with d1:
