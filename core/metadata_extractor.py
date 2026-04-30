@@ -1,15 +1,10 @@
-"""Application metadata extraction (regex-based).
-
-Extracts: applicant name, project title, application ID, nationality,
-current institution, ethics tables presence, English signal.
-"""
+"""Application metadata extraction (regex-based)."""
 import re
 from typing import Dict
 
 
 METADATA_PATTERNS = {
     "applicant_name": [
-        # FIX: stop at • (bullet) or | (pipe) to avoid swallowing "Application ID: ..."
         re.compile(r"applicant(?:\s+name)?\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
         re.compile(r"name\s+and\s+surname\s*[:\-]\s*([^•|\n]+)", re.IGNORECASE),
     ],
@@ -35,7 +30,6 @@ ETHICS_PATTERNS = [
     re.compile(r"security\s+(?:scrutiny|self.?assessment|issues)", re.IGNORECASE),
 ]
 
-# Common English words for English-language detection
 ENGLISH_WORDS = set([
     "the", "and", "of", "to", "in", "is", "that", "for", "with", "this",
     "research", "project", "proposal", "objective", "method", "analysis",
@@ -43,39 +37,43 @@ ENGLISH_WORDS = set([
     "however", "therefore", "furthermore", "moreover",
 ])
 
-# --- FIX: UUID pattern for trailing-ID cleanup ---
+# UUID pattern for trailing-ID cleanup (used only on non-ID fields)
 _UUID_TAIL_RE = re.compile(
     r"\s*(?:application\s*id\s*[:\-]?\s*)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}.*$",
     re.IGNORECASE,
 )
 
 
-def _clean_value(raw: str) -> str:
-    """Strip bullets, pipes, trailing 'Application ID', and UUIDs from any extracted field."""
+def _clean_value(raw: str, field_name: str = "") -> str:
+    """Strip bullets, pipes, trailing 'Application ID', and UUIDs from name-like fields.
+    
+    field_name: when 'application_id', UUID stripping is SKIPPED (UUID IS the value).
+    """
     if not raw:
         return raw
+    
     # Cut at common end-of-name separators
     for sep in ["•", "|", "  Application ID", "  application id", "\tApplication ID"]:
         idx = raw.find(sep)
         if idx > 0:
             raw = raw[:idx]
             break
-    # Strip trailing UUIDs (with optional "Application ID:" prefix)
-    raw = _UUID_TAIL_RE.sub("", raw)
+    
+    # Only strip trailing UUIDs for non-ID fields
+    if field_name != "application_id":
+        raw = _UUID_TAIL_RE.sub("", raw)
+    
     return raw.strip(" \t\n\r:-•|")
-# --- end fix ---
 
 
-def _first_match(text: str, patterns) -> str:
+def _first_match(text: str, patterns, field_name: str = "") -> str:
     for pat in patterns:
         m = pat.search(text)
         if m:
             value = m.group(1).strip()
-            # Trim trailing label-like fragments
             value = re.split(r"\s{2,}|\n", value)[0].strip()
             value = value.rstrip(".,;:")
-            # FIX: extra defensive cleanup
-            value = _clean_value(value)
+            value = _clean_value(value, field_name=field_name)
             if value and len(value) < 200:
                 return value
     return "INSUFFICIENT_EVIDENCE"
@@ -91,7 +89,7 @@ def extract_metadata(full_text: str) -> Dict:
     
     out = {}
     for field, patterns in METADATA_PATTERNS.items():
-        out[field] = _first_match(full_text, patterns)
+        out[field] = _first_match(full_text, patterns, field_name=field)
     
     # Ethics tables
     ethics_hits = sum(1 for p in ETHICS_PATTERNS if p.search(full_text))
@@ -102,7 +100,7 @@ def extract_metadata(full_text: str) -> Dict:
     else:
         out["ethics_tables_present"] = "NO"
     
-    # English signal — count common English words in first 5000 chars
+    # English signal
     sample = full_text[:5000].lower()
     words = re.findall(r"\b[a-z]+\b", sample)
     if len(words) >= 50:
