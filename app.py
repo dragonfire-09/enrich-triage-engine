@@ -112,7 +112,7 @@ with st.expander("📚 Karar Mantığı & Buckets", expanded=False):
 3. `FORMAL_UYUMSUZ` — severe overflow
 4. `MOBILITE_UYUMSUZ` — TR > 12 ay
 5. `MOBILITY_DOUBT` — undated mentions
-6. `MANUAL_REVIEW` — INSUFFICIENT_EVIDENCE
+6. `MANUAL_REVIEW` — INSUFFICIENT_EVIDENCE / WEAK quality
 7. `PASS` — tüm katmanlar geçti
         """)
     with c2:
@@ -131,7 +131,7 @@ with st.expander("📚 Karar Mantığı & Buckets", expanded=False):
 6. Thematic scoring
 7. Mobility (window: 30 Apr 2023 → 30 Apr 2026)
 8. Scientific quality (LLM)
-9. Decision aggregation
+9. Decision aggregation (with WEAK gate)
         """)
 
 # =========================================================================
@@ -221,7 +221,17 @@ if uploaded:
                 if scientific.get("llm_error"):
                     st.error(f"LLM error for {f.name}: {scientific['llm_error']}")
         
-        final = aggregate_decision(phd, formal, thematic, mobility)
+        # FIX #3: pass scientific quality to decision engine for WEAK gate
+        final = aggregate_decision(
+            phd,
+            formal,
+            thematic,
+            mobility,
+            scientific={
+                "band": (scientific or {}).get("scientific_quality_band"),
+                "weighted_total_100": (scientific or {}).get("weighted_total_100", 0),
+            } if scientific else None,
+        )
         
         results.append({
             "filename": f.name,
