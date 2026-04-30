@@ -65,7 +65,10 @@ def score_thematic(
     
     direct_score = min(1.0, direct_count * 0.15)
     indirect_score = min(0.4, indirect_count * 0.06)
-    score = round(direct_score + indirect_score, 2)
+    
+    # --- FIX: clamp combined score to [0.0, 1.0] so *100 conversion never exceeds 100 ---
+    score = round(min(1.0, direct_score + indirect_score), 2)
+    # --- end fix ---
     
     total_hits = direct_count + indirect_count
     
