@@ -1,5 +1,5 @@
 """Final decision aggregation with Turkish bucket names per system prompt."""
-from typing import Dict
+from typing import Dict, Optional
 
 
 # System prompt buckets (Turkish)
@@ -11,8 +11,20 @@ BUCKET_MOBILITY_DOUBT = "MOBILITY_DOUBT"
 BUCKET_PASS = "PASS"
 BUCKET_MANUAL = "MANUAL_REVIEW"
 
+# --- FIX: scientific quality thresholds ---
+# Bands below this band, OR weighted_total below this score → MANUAL_REVIEW
+WEAK_BANDS = {"WEAK", "VERY_WEAK", "POOR"}
+SCIENTIFIC_MIN_TOTAL = 50.0  # weighted_total_100 below this → MANUAL_REVIEW
+# --- end fix ---
 
-def aggregate_decision(phd: Dict, formal: Dict, thematic: Dict, mobility: Dict) -> Dict:
+
+def aggregate_decision(
+    phd: Dict,
+    formal: Dict,
+    thematic: Dict,
+    mobility: Dict,
+    scientific: Optional[Dict] = None,  # FIX: new optional parameter
+) -> Dict:
     """Combine all layer decisions per system-prompt bucket priority.
     
     Priority order (per system prompt):
@@ -22,7 +34,12 @@ def aggregate_decision(phd: Dict, formal: Dict, thematic: Dict, mobility: Dict) 
       4. Mobility clearly fails → MOBILITE_UYUMSUZ
       5. Mobility uncertain → MOBILITY_DOUBT
       6. Evidence insufficient → MANUAL_REVIEW
-      7. Else → PASS
+      7. Scientific quality WEAK → MANUAL_REVIEW   (FIX: new gate)
+      8. Else → PASS
+    
+    Parameters:
+      scientific: optional dict with keys {"band", "weighted_total_100"}.
+                  If None, the scientific quality gate is skipped (legacy behavior).
     """
     reasons = []
     
@@ -105,7 +122,34 @@ def aggregate_decision(phd: Dict, formal: Dict, thematic: Dict, mobility: Dict) 
             "manual_review": True
         }
     
-    # 7. PASS
+    # --- FIX: 7. Scientific quality gate (only if scientific dict provided) ---
+    if scientific is not None:
+        band = str(scientific.get("band", "") or "").strip().upper()
+        try:
+            total = float(scientific.get("weighted_total_100", 0) or 0)
+        except (TypeError, ValueError):
+            total = 0.0
+        
+        if band in WEAK_BANDS:
+            return {
+                "decision": BUCKET_MANUAL,
+                "primary_reason": f"Scientific quality WEAK (band={band}, total={total:.1f})",
+                "reasons": [
+                    f"Weighted total {total:.1f}/100 below acceptable threshold",
+                    "Low excellence/impact/implementation scores require human evaluator review",
+                ],
+                "manual_review": True
+            }
+        if total > 0 and total < SCIENTIFIC_MIN_TOTAL:
+            return {
+                "decision": BUCKET_MANUAL,
+                "primary_reason": f"Scientific quality below threshold (total={total:.1f} < {SCIENTIFIC_MIN_TOTAL})",
+                "reasons": [f"Weighted total {total:.1f}/100 < {SCIENTIFIC_MIN_TOTAL}"],
+                "manual_review": True
+            }
+    # --- end fix ---
+    
+    # 8. PASS
     return {
         "decision": BUCKET_PASS,
         "primary_reason": "All layers passed",
