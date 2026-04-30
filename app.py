@@ -44,9 +44,15 @@ with st.sidebar:
     enable_llm = st.checkbox("Enable LLM (OpenRouter)", value=True,
         help="Excellence/Impact/Implementation skorları için LLM kullan")
     
+    api_key = ""
+    model = ""
     if enable_llm:
         # API key — Secrets'tan veya manuel
-        api_key = st.secrets.get("OPENROUTER_API_KEY", "") if hasattr(st, "secrets") else ""
+        try:
+            api_key = st.secrets.get("OPENROUTER_API_KEY", "")
+        except Exception:
+            api_key = ""
+        
         if not api_key:
             api_key = st.text_input("OpenRouter API Key", type="password",
                 help="https://openrouter.ai/keys",
@@ -66,9 +72,6 @@ with st.sidebar:
             index=0,
             help="Free için: gemini-2.0-flash-exp:free"
         )
-    else:
-        api_key = ""
-        model = ""
     
     st.divider()
     st.markdown("**📐 Codex #2 — Segmentation**")
@@ -105,7 +108,7 @@ with st.expander("📚 Karar Mantığı & Buckets", expanded=False):
 1. `PHD_UYUMSUZ` — date > deadline
 2. `TEMATIK_UYUMSUZ` — score 0 + meaningful
 3. `FORMAL_UYUMSUZ` — severe overflow
-4. `MOBILITE_UYUMSUZ` — TR > 12 ay (gelecekte)
+4. `MOBILITE_UYUMSUZ` — TR > 12 ay
 5. `MOBILITY_DOUBT` — undated mentions
 6. `MANUAL_REVIEW` — INSUFFICIENT_EVIDENCE
 7. `PASS` — tüm katmanlar geçti
@@ -164,9 +167,9 @@ if uploaded:
                 "metadata": {},
                 "spans": {},
                 "phd": {"found": False},
-                "formal": {"decision": "FAIL", "issues": [pdf_data["error"]]},
-                "thematic": {"decision": "INSUFFICIENT_EVIDENCE"},
-                "mobility": {"status": "INSUFFICIENT_EVIDENCE"},
+                "formal": {"decision": "FAIL", "issues": [pdf_data["error"]], "warnings": [], "proposal_pages": 0, "cv_pages": 0},
+                "thematic": {"decision": "INSUFFICIENT_EVIDENCE", "score": 0, "green_hits": [], "blue_hits": [], "indirect_hits": [], "evidence": pdf_data["error"]},
+                "mobility": {"status": "INSUFFICIENT_EVIDENCE", "evidence": pdf_data["error"]},
                 "scientific": None,
                 "final": {"decision": "MANUAL_REVIEW", "primary_reason": pdf_data["error"], "manual_review": True},
                 "ocr_recommended": False,
@@ -247,7 +250,7 @@ if uploaded:
         st.warning(f"🔍 {manual_review_count} file(s) flagged for **manual review**")
     
     # ============ TABLE ============
-    st.header("📋 Per-File Tabular Report (39 kolon)")
+    st.header("📋 Part 1 — Per-File Tabular Report (39 columns)")
     df = results_to_dataframe(results)
     st.dataframe(df, use_container_width=True, height=400)
     
@@ -311,6 +314,8 @@ if uploaded:
             with d1:
                 st.subheader("📄 Segmentation")
                 st.json(r["spans"])
+                st.subheader("🆔 Metadata")
+                st.json(r.get("metadata", {}))
             with d2:
                 st.subheader("🎓 PhD")
                 st.json(r["phd"])
@@ -330,10 +335,9 @@ if uploaded:
                 with st.expander("Raw extracted text"):
                     st.text_area("", get_full_text(r["pdf_data"])[:5000], height=300)
     
-    # ============ PART 3 — Batch Synthesis Detailed ============
+    # ============ PART 3 — Batch Synthesis ============
     st.header("🔎 Part 3 — Batch Sentezi")
     
-    # Strongest / weakest files by weighted_total_100
     scored = [(r, (r.get("scientific") or {}).get("weighted_total_100", 0)) for r in results]
     scored.sort(key=lambda x: x[1], reverse=True)
     
@@ -341,46 +345,137 @@ if uploaded:
     with cs1:
         st.markdown("**💪 En Güçlü Dosyalar** (weighted_total_100)")
         for r, sc in scored[:3]:
-            st.markdown(f"- `{r['filename']}` → **{sc}** ({(r.get('scientific') or {}).get('scientific_quality_band','?')})")
+            band = (r.get("scientific") or {}).get("scientific_quality_band", "?")
+            st.markdown(f"- `{r['filename']}` → **{sc}** ({band})")
     with cs2:
         st.markdown("**📉 En Zayıf Dosyalar**")
         for r, sc in scored[-3:][::-1]:
-            st.markdown(f"- `{r['filename']}` → **{sc}** ({(r.get('scientific') or {}).get('scientific_quality_band','?')})")
+            band = (r.get("scientific") or {}).get("scientific_quality_band", "?")
+            st.markdown(f"- `{r['filename']}` → **{sc}** ({band})")
     
     st.markdown("**📊 Bucket Dağılımı**")
     bucket_df = pd.DataFrame(list(decision_counts.items()), columns=["Bucket", "Count"])
     st.dataframe(bucket_df, use_container_width=True)
     
-    # Common issues
-    st.markdown("**🔍 Manual Review Gerektiren Dosyalar**")
+    # Common formal issues
+    formal_issues_all = []
     for r in results:
-        if r["final"].get("manual_review"):
+        formal_issues_all.extend(r["formal"].get("warnings", []) + r["formal"].get("issues", []))
+    if formal_issues_all:
+        st.markdown("**⚠️ Tekrar Eden Formal Sorunlar:**")
+        from collections import Counter
+        for issue, cnt in Counter(formal_issues_all).most_common(5):
+            st.markdown(f"- {issue} ({cnt} dosya)")
+    
+    # Common thematic issues
+    thematic_fails = [r["filename"] for r in results if r["thematic"].get("decision") == "FAIL"]
+    thematic_doubts = [r["filename"] for r in results if r["thematic"].get("decision") == "DOUBT"]
+    if thematic_fails or thematic_doubts:
+        st.markdown("**🌱 Tematik Sorunlar:**")
+        if thematic_fails:
+            st.markdown(f"- FAIL ({len(thematic_fails)}): {', '.join(thematic_fails)}")
+        if thematic_doubts:
+            st.markdown(f"- DOUBT ({len(thematic_doubts)}): {', '.join(thematic_doubts)}")
+    
+    # Common mobility issues
+    mob_doubts = [r["filename"] for r in results if r["mobility"].get("status") == "DOUBT"]
+    mob_insufficient = [r["filename"] for r in results if r["mobility"].get("status") == "INSUFFICIENT_EVIDENCE"]
+    if mob_doubts or mob_insufficient:
+        st.markdown("**🌍 Mobility Sorunları:**")
+        if mob_doubts:
+            st.markdown(f"- DOUBT ({len(mob_doubts)}): {', '.join(mob_doubts)}")
+        if mob_insufficient:
+            st.markdown(f"- INSUFFICIENT ({len(mob_insufficient)}): {', '.join(mob_insufficient)}")
+    
+    st.markdown("**🔍 Manual Review Gerektiren Dosyalar:**")
+    manual_files = [r for r in results if r["final"].get("manual_review")]
+    if manual_files:
+        for r in manual_files:
             st.markdown(f"- `{r['filename']}` → {r['final']['primary_reason']}")
+    else:
+        st.markdown("_Hiçbir dosya manuel review gerektirmiyor._")
     
     # ============ PART 4 — Strict QA Check ============
     st.header("🚨 Part 4 — Strict QA Check")
     
-    qa_findings = []
+    qa_findings = {
+        "formally_ok_but_scientifically_weak": [],
+        "thematic_ok_but_mobility_risky": [],
+        "short_but_compliant_might_misjudge": [],
+        "template_contamination": [],
+    }
     
-    # Formally compliant but scientifically weak
     for r in results:
         sci = r.get("scientific") or {}
         if (r["formal"].get("decision") == "PASS" 
             and sci.get("scientific_quality_band") in ("WEAK", "VERY_WEAK")):
-            qa_findings.append(("formally_ok_but_scientifically_weak", r["filename"]))
-    
-    # Thematically OK but mobility risky
-    for r in results:
+            qa_findings["formally_ok_but_scientifically_weak"].append(r["filename"])
+        
         if (r["thematic"].get("decision") in ("PASS", "DOUBT")
             and r["mobility"].get("status") == "DOUBT"):
-            qa_findings.append(("thematic_ok_but_mobility_risky", r["filename"]))
-    
-    # Page-count borderline
-    for r in results:
+            qa_findings["thematic_ok_but_mobility_risky"].append(r["filename"])
+        
         pp = r["formal"].get("proposal_pages", 0)
         cp = r["formal"].get("cv_pages", 0)
-        if pp < 5 or cp < 3:
-            qa_findings.append(("short_but_compliant_might_misjudge", r["filename"]))
+        if (pp > 0 and pp < 5) or (cp > 0 and cp < 3):
+            qa_findings["short_but_compliant_might_misjudge"].append(
+                f"{r['filename']} (proposal={pp}p, cv={cp}p)"
+            )
+        
+        if any("Template" in w for w in r["formal"].get("warnings", [])):
+            qa_findings["template_contamination"].append(r["filename"])
     
-    # Template contamination
-    for r in
+    qa_questions = [
+        ("Did any file look formally compliant but scientifically weak?", 
+         "formally_ok_but_scientifically_weak"),
+        ("Did any file look thematically acceptable but mobility-risky?",
+         "thematic_ok_but_mobility_risky"),
+        ("Did any file risk a false rejection due to 'exact pages' misreading?",
+         "short_but_compliant_might_misjudge"),
+        ("Did any file show template contamination or packaging inconsistency?",
+         "template_contamination"),
+    ]
+    
+    for question, key in qa_questions:
+        files = qa_findings[key]
+        st.markdown(f"**{question}**")
+        if files:
+            st.warning(f"⚠️ YES — {len(files)} dosya:")
+            for fn in files:
+                st.markdown(f"  - `{fn}`")
+        else:
+            st.success("✅ NO — bu kategoride sorunlu dosya yok")
+        st.divider()
+
+else:
+    st.info("👆 Upload 5–10 PDF files to begin triage")
+    st.markdown("""
+    ### 📖 Hızlı Başlangıç
+    1. **Sol sidebar**'dan LLM'i aç ve API key gir (veya Streamlit Secrets'a `OPENROUTER_API_KEY` ekle)
+    2. Default kalibrasyon değerleri historical eligible 3 dosyada test edildi
+    3. **5–10 PDF** yükle (drag-and-drop veya Browse)
+    4. Sonuçları gör: Part 1 (TSV) → Part 2 (per-file) → Part 3 (batch) → Part 4 (QA)
+    5. **Excel** veya **TSV** olarak indir
+    
+    ### 🔑 API Key Eklemek
+    **Yöntem 1 — Streamlit Secrets (önerilen):**
+    1. Streamlit Cloud → uygulamanın sayfası → ⚙️ Settings → Secrets
+    2. Şunu yapıştır:
+    ```toml
+    OPENROUTER_API_KEY = "sk-or-v1-..."
+    ```
+    3. Save → uygulama otomatik restart eder
+    
+    **Yöntem 2 — Sidebar'dan elle gir:**
+    Her oturumda yeniden gir.
+    
+    ### 💰 Maliyet
+    - `gpt-4o-mini` → ~\$0.02/batch (10 dosya)
+    - `gpt-4o` → ~\$0.30/batch
+    - `gemini-2.0-flash-exp:free` → **\$0** (rate-limit olabilir)
+    
+    ### ⚖️ Karar Felsefesi
+    - **Hard FAIL** sadece deterministic ihlallerde
+    - **DOUBT / MANUAL_REVIEW** → yorum gerektiren her şey
+    - **INSUFFICIENT_EVIDENCE** → image-based PDF, OCR önerisi
+    """)
