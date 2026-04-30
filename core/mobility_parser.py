@@ -1,10 +1,4 @@
-"""Mobility timeline reconstruction.
-
-v5 fixes:
-  - Undated Turkey mentions → DOUBT but with manual review (not hard fail)
-  - Excludes more boilerplate Country/Institution lines that are address-only
-  - Side signals stay informational
-"""
+"""Mobility timeline reconstruction (parameterized + email exclude)."""
 import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
@@ -40,7 +34,6 @@ SINGLE_DATE_PATTERN = re.compile(
 
 YEAR_PATTERN = re.compile(r"\b(19[89]\d|20\d{2})\b")
 
-# Lines that mention Turkey but are NOT mobility signals
 EXCLUDE_PATTERNS = [
     re.compile(r"nationalit(?:y|ies)\s*[:\-]", re.IGNORECASE),
     re.compile(r"citizenship\s*[:\-]", re.IGNORECASE),
@@ -53,6 +46,9 @@ EXCLUDE_PATTERNS = [
     re.compile(r"acronym\s*[:\-]", re.IGNORECASE),
     re.compile(r"keywords?\s*[:\-]", re.IGNORECASE),
     re.compile(r"abstract\s*[:\-]", re.IGNORECASE),
+    re.compile(r"e[\-\s]?mail\s*[:\-]", re.IGNORECASE),
+    re.compile(r"@[a-z0-9.\-]+\.(?:edu\.tr|com\.tr|gov\.tr|org\.tr)", re.IGNORECASE),
+    re.compile(r"reference\s*#?\d*", re.IGNORECASE),
 ]
 
 NATIONALITY_PATTERN = re.compile(r"nationalit(?:y|ies)\s*[:\-]\s*([^\n]*)", re.IGNORECASE)
@@ -81,16 +77,12 @@ def _parse_date_loose(s: str, default_dt: datetime) -> Optional[datetime]:
 
 def _scan_intervals(text: str, reference_date: datetime, window_start: datetime) -> Tuple[List, List, List]:
     lines = text.split("\n")
-    intervals = []
-    evidence = []
-    raw_lines = []
-    
+    intervals, evidence, raw_lines = [], [], []
     for i, line in enumerate(lines):
         if _is_excluded_line(line):
             continue
         if not _has_turkey_signal(line):
             continue
-        
         raw_lines.append(line.strip()[:120])
         context = " ".join(lines[max(0, i-2):min(len(lines), i+3)])
         
@@ -131,7 +123,6 @@ def _scan_intervals(text: str, reference_date: datetime, window_start: datetime)
                     evidence.append(f"[years] {context[:140].strip()}")
             except Exception:
                 pass
-    
     return intervals, evidence, raw_lines
 
 
@@ -148,12 +139,20 @@ def _collect_side_signals(full_text: str) -> List[str]:
     return signals
 
 
-def parse_mobility(cv_text: str, reference_date: datetime, lookback_years: int = 3, full_text: str = "") -> Dict:
-    """Estimate Turkey months. Falls back to full_text if CV is sparse.
+def parse_mobility(
+    cv_text: str,
+    reference_date: datetime,
+    lookback_years: int = 3,
+    full_text: str = "",
+    max_turkey_months: int = 12,
+    doubt_grace_months: int = 6,
+) -> Dict:
+    """Estimate Turkey months in last N years.
     
-    v5: undated Turkey mentions → soft DOUBT (manual review),
-        nationality alone → PASS,
-        truly empty CV → INSUFFICIENT_EVIDENCE.
+    Parameters:
+      lookback_years: how far back to scan (typical: 3)
+      max_turkey_months: pass threshold (e.g., 12 = max 12 months in TR)
+      doubt_grace_months: how much above threshold = DOUBT instead of DOUBT
     """
     window_start = reference_date - timedelta(days=365 * lookback_years)
     cv_text = cv_text or ""
@@ -165,9 +164,7 @@ def parse_mobility(cv_text: str, reference_date: datetime, lookback_years: int =
     if not intervals and full_text:
         intervals_full, evidence_full, raw_full = _scan_intervals(full_text, reference_date, window_start)
         if intervals_full:
-            intervals = intervals_full
-            evidence = evidence_full
-            raw_lines = raw_full
+            intervals, evidence, raw_lines = intervals_full, evidence_full, raw_full
             fallback_used = True
         else:
             raw_lines = list(set(raw_lines + raw_full))
@@ -220,9 +217,9 @@ def parse_mobility(cv_text: str, reference_date: datetime, lookback_years: int =
     total_days = sum((e - s).days for s, e in merged)
     months = round(total_days / 30.44, 1)
     
-    if months <= 12:
+    if months <= max_turkey_months:
         status = "PASS"
-    elif months <= 18:
+    elif months <= max_turkey_months + doubt_grace_months:
         status = "DOUBT"
     else:
         status = "DOUBT"
@@ -235,5 +232,9 @@ def parse_mobility(cv_text: str, reference_date: datetime, lookback_years: int =
         "intervals": [(s.strftime("%Y-%m"), e.strftime("%Y-%m")) for s, e in merged],
         "side_signals": side_signals,
         "fallback_used": fallback_used,
-        "needs_ocr": False
+        "needs_ocr": False,
+        "params_used": {
+            "lookback_years": lookback_years,
+            "max_turkey_months": max_turkey_months,
+        }
     }
