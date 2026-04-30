@@ -1,78 +1,50 @@
 # 🔬 ENRICH Triage Engine
 
-ENRICH-benzeri başvuru dosyaları için ilk aşama idari/tematik triage motoru.
-Streamlit tabanlı, audit edilebilir, kalibre edilebilir.
+> **TÜBİTAK 2236-A ENRICH başvurularını otomatik tarayan, LLM-destekli triage motoru.**  
+> Streamlit + OpenRouter LLM + 7-katmanlı karar mantığı = Production-ready akademik başvuru elemesi.
 
-> **Felsefe:** Deterministic kontrolleri kodla yap; yorum gerektiren alanlarda
-> otomatik ineligible yerine **warning** veya **manual review** sinyali üret.
+[![Streamlit](https://img.shields.io/badge/Streamlit-Cloud-FF4B4B?logo=streamlit)](https://streamlit.io/cloud)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
 
 ## 🎯 Ne Yapar?
 
-5–10 application PDF'i yükle → her biri için:
+ENRICH Triage Engine, akademik başvuru PDF'lerini (5–10 dosyalık batch'ler halinde) otomatik olarak inceler ve 7 katmanlı karar zinciriyle her dosyaya bir **bucket** atar:
 
-1. **PDF Load** — text extraction + OCR-recommendation flag
-2. **Segmentation** — Proposal / CV / Ethics page spans (hard caps ile)
-3. **PhD Eligibility** — date extraction vs. deadline (30 Apr 2026)
-4. **Formal Compliance** — page limits + template contamination
-5. **Thematic Scoring** — Green/Blue Transition (indirect-rescue)
-6. **Mobility** — Türkiye months in last N years
-7. **Decision Aggregation** — PASS / DOUBT / FAIL / INSUFFICIENT_EVIDENCE
+| Bucket | Anlamı |
+|--------|--------|
+| ✅ `PASS` | Tüm katmanlardan geçti — değerlendirmeye uygun |
+| 🟡 `MANUAL_REVIEW` | İnsan değerlendirmesi gerekiyor |
+| 🟠 `MOBILITY_DOUBT` | Hareketlilik şüpheli (Türkiye'de 12+ ay) |
+| 🔴 `PHD_UYUMSUZ` | Doktora tarihi deadline'dan sonra |
+| 🔴 `TEMATIK_UYUMSUZ` | Green/Blue Transition ile alakasız |
+| 🔴 `FORMAL_UYUMSUZ` | Sayfa limitleri ciddi şekilde aşılmış |
+| 🔴 `MOBILITE_UYUMSUZ` | Türkiye'de geçen süre limit aşımı |
 
-Çıktı: 1 satır per file Excel (`.xlsx`) + TSV + per-file audit JSON.
-
----
-
-## 📊 Karar Tipleri
-
-| Karar | Anlamı | Manual Review? |
-|---|---|:---:|
-| ✅ `PASS` | Tüm katmanlar geçti | ❌ |
-| 🔴 `PHD_INELIGIBLE` | PhD/defense > deadline | ❌ |
-| 🔴 `FAIL_FORMAL` | Severe page overflow (segmenter başarısız) | ❌ |
-| 🔴 `FAIL_THEMATIC` | Proposal'da hiç anchor yok | ✅ |
-| 🟠 `DOUBT` | Thematic / mobility borderline | ✅ |
-| 🟡 `INSUFFICIENT_EVIDENCE` | Image-based PDF, OCR gerekli | ✅ |
-| ⚫ `PARSE_ERROR` | PDF okunamadı | ✅ |
+Her dosya için **39 sütunluk detaylı rapor**, **Türkçe narrative verdict**, ve **LLM-tabanlı bilimsel kalite skoru** üretir.
 
 ---
 
-## ⚙️ Codex 7 Hata Alanı — Kalibrasyon Kontrolleri
+## 🏗️ Mimari
 
-Codex notları parse + segmentation + evidence reconstruction kalibrasyonunda
-şu 7 risk alanını işaretledi. Sol sidebar'daki sliderlar bunlara denk gelir:
-
-| # | Hata Alanı | Sidebar Kontrolü | Çözüm |
-|---|---|---|---|
-| 1 | Tek-PDF varsayımı | (multi-file uploader) | Çözüldü — batch upload |
-| 2 | Aggressive segmentation | Proposal/CV cap, severe overflow | Hard caps + boundary detection |
-| 3 | Template contamination | Template sensitivity | Sensitivity-controlled markers |
-| 4 | PhD date dar regex | (kod-içi) | Multi-format + EN/TR keywords |
-| 5 | Mobility flexibility | Lookback, max months, grace | 30+ TR token + full-text fallback |
-| 6 | Thematic too literal | Pass / doubt threshold | Indirect-rescue + DOUBT geçişi |
-| 7 | Historical compatibility | (default değerler) | 3 historical dosyada test edildi |
-
----
-
-## 🚀 Deploy
-
-### Streamlit Community Cloud
-1. Bu repo'yu fork et veya kullan
-2. https://share.streamlit.io → Continue with GitHub
-3. New app → bu repo, branch `main`, main file `app.py`
-4. Deploy
-
-### Local Çalıştırma
-```bash
-git clone https://github.com/<username>/enrich-triage-engine.git
-cd enrich-triage-engine
-
-# Sistem paketleri (Tesseract OCR + Poppler)
-sudo apt-get install tesseract-ocr tesseract-ocr-tur poppler-utils
-
-# Python paketleri
-pip install -r requirements.txt
-
-# Çalıştır
-streamlit run app.py
+```mermaid
+flowchart TD
+    A[📤 PDF Batch Upload] --> B[📄 PDF Loader + OCR Flag]
+    B --> C[✂️ Segmenter<br/>Proposal/CV split]
+    C --> D[🆔 Metadata Extractor<br/>Regex-based]
+    C --> E[🎓 PhD Eligibility<br/>Multi-format date]
+    C --> F[📐 Formal Compliance<br/>Page caps]
+    C --> G[🌱 Thematic Scoring<br/>Green+Blue+Indirect]
+    C --> H[🌍 Mobility Parser<br/>3-yr window]
+    C --> I[🤖 LLM Scientific Assessment<br/>OpenRouter]
+    D --> J[⚖️ Decision Engine<br/>Bucket Aggregation]
+    E --> J
+    F --> J
+    G --> J
+    H --> J
+    I --> J
+    J --> K[📊 39-Column Report]
+    J --> L[📝 Türkçe Verdict]
+    J --> M[🚨 QA Strict Check]
