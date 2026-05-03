@@ -100,11 +100,25 @@ def _mobility_decision_label(mobility: Dict) -> str:
 
 
 def _thematic_confidence(thematic: Dict) -> int:
-    """Derive 0-100 confidence from hit count + score consistency."""
-    hits = len(thematic.get("green_hits", [])) + len(thematic.get("blue_hits", []))
-    indirect = len(thematic.get("indirect_hits", []))
+    """Derive 0-100 confidence.
+    
+    FIX: Prefer the new `confidence` field from thematic_scorer.py
+    (system-prompt-aligned). Fall back to legacy heuristic if absent
+    (backward compatibility for older runs / cached results).
+    """
     if thematic.get("decision") == "INSUFFICIENT_EVIDENCE":
         return 0
+    
+    # NEW: use confidence from thematic_scorer if available (0.0-1.0 → 0-100)
+    if "confidence" in thematic and thematic["confidence"] is not None:
+        try:
+            return int(round(float(thematic["confidence"]) * 100))
+        except (TypeError, ValueError):
+            pass  # fall through to legacy heuristic
+    
+    # LEGACY fallback: hit-count heuristic
+    hits = len(thematic.get("green_hits", [])) + len(thematic.get("blue_hits", []))
+    indirect = len(thematic.get("indirect_hits", []))
     base = min(70, hits * 15 + indirect * 5)
     return min(100, base + 20 if hits >= 2 else base)
 
