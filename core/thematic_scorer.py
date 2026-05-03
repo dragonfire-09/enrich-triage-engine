@@ -15,11 +15,17 @@ Scoring:
 - Indirect hits: up to 0.4 contribution (6% per term, cap 0.4)
 - Combined score clamped to [0.0, 1.0] → multiplied by 100 for display
 
-FIX (word-boundary):
-- Pre-compiled regex with \b word boundaries
-- Prevents false positives like "carbon" matching "carbonate",
-  "mpa" matching MPa pressure unit, "ev" matching "every", etc.
-- Ambiguous short acronyms removed where full forms exist
+Confidence (system prompt aligned):
+- Computed from total_hits density
+- Decision uses BOTH score AND confidence per system prompt rule:
+    score < pass_threshold       → FAIL
+    score >= pass AND conf < 0.7 → DOUBT
+    score >= pass AND conf >= 0.7 → PASS
+
+FIXES:
+- Word-boundary regex (no substring false positives)
+- Score capped at [0.0, 1.0]
+- Confidence-based DOUBT logic per system prompt
 """
 import re
 from typing import Dict, List, Tuple, Pattern
@@ -76,8 +82,6 @@ GREEN_TERMS = [
     "energy flexibility", "energy transition",
     
     # --- Critical raw materials & strategic autonomy ---
-    # NOTE: removed "crm", "cdr", "dac" (ambiguous standalone acronyms;
-    # full forms below already provide coverage)
     "critical raw materials", "critical raw material",
     "strategic autonomy", "strategic raw materials",
     "non-critical element", "non-critical elements",
@@ -86,7 +90,6 @@ GREEN_TERMS = [
     "secondary raw materials", "urban mining",
     
     # --- Industrial decarbonization ---
-    # NOTE: kept "ccs" and "ccus" — these are specific enough with word-boundary
     "low-carbon", "low carbon", "low-emission",
     "green steel", "green cement", "green chemistry",
     "carbon capture", "ccs", "ccus", "carbon storage",
@@ -102,7 +105,6 @@ GREEN_TERMS = [
     "resilient infrastructure", "climate-proof",
     
     # --- Mission: Climate-Neutral and Smart Cities ---
-    # NOTE: removed standalone "sump" (engineering term ambiguity)
     "climate-neutral cities", "smart city", "smart cities",
     "urban transition", "sustainable city", "green city",
     "urban green", "green building", "green construction",
@@ -136,80 +138,64 @@ GREEN_TERMS = [
 # BLUE TRANSITION TERMS — Mission Ocean + Blue Economy
 # =========================================================================
 BLUE_TERMS = [
-    # --- Core blue economy ---
     "blue economy", "blue transition", "blue growth",
     "sustainable blue economy", "blue deal", "blue carbon",
     
-    # --- Marine ecosystems ---
-    # NOTE: removed "mpa" (false positive: MPa = megapascal pressure unit)
-    # and "msp" (ambiguous); full forms retained
     "marine", "marine ecosystem", "marine biodiversity",
     "marine environment", "marine habitat", "marine pollution",
     "marine conservation", "marine spatial planning",
     "marine protected area", "marine litter",
     "marine renewable", "marine biotechnology",
     
-    # --- Ocean ---
     "ocean", "ocean health", "ocean acidification",
     "ocean conservation", "ocean governance", "ocean literacy",
     "ocean energy", "ocean observation", "deep sea", "deep-sea",
     "high seas", "open ocean", "ocean current",
     "restore our ocean", "mission ocean",
     
-    # --- Coastal & maritime ---
     "coastal", "coastal zone", "coastal resilience",
     "coastal erosion", "coastal management", "coastal community",
     "maritime", "maritime sector", "maritime industry",
     "shipping", "sustainable shipping", "green shipping",
     "port", "green port", "sustainable port",
     
-    # --- Fisheries & aquaculture ---
     "fisheries", "fishery", "sustainable fisheries",
     "small-scale fisheries", "aquaculture", "sustainable aquaculture",
     "fish stock", "overfishing", "by-catch", "iuu fishing",
     "seafood", "sustainable seafood", "blue food",
     
-    # --- Water resources ---
     "sea", "sea level", "sea level rise", "freshwater",
     "water resources", "water quality", "water management",
     "water scarcity", "drought", "wastewater", "wastewater treatment",
     "river basin", "watershed", "estuary", "wetland",
     "water-energy nexus",
     
-    # --- Marine pollution / litter ---
     "marine debris", "ghost net",
     "plastic in ocean", "ocean plastic", "marine plastic",
     
-    # --- Marine renewable energy ---
     "marine energy", "offshore renewable", "floating wind",
 ]
 
 
 # =========================================================================
-# INDIRECT TERMS — Cross-cutting enablers (governance, equity, health, etc.)
+# INDIRECT TERMS — Cross-cutting enablers
 # =========================================================================
 INDIRECT_TERMS = [
-    # --- Environment general ---
     "environment", "environmental", "ecological", "ecology",
     "ecosystem", "habitat", "biosphere",
     
-    # --- Pollution / quality ---
     "pollution", "pollutant", "contamination", "waste",
     "biodegradable", "non-toxic", "ecotoxicology",
     
-    # --- Governance & policy ---
     "governance", "policy", "regulation", "framework",
     "stakeholder", "participatory", "co-creation", "co-design",
     "public engagement", "citizen science", "civil society",
     "social science", "political economy", "political ecology",
     
-    # --- Cross-cutting research ---
     "interdisciplinary", "transdisciplinary", "multidisciplinary",
     "transition", "transformation", "systemic change",
     "paradigm shift", "innovation system",
     
-    # --- Equity & justice ---
-    # NOTE: removed "ldc" (ambiguous); "least developed countries" retained
     "global south", "developing countries", "developing country",
     "least developed countries", "low-income country",
     "equity", "equality", "justice", "environmental justice",
@@ -217,98 +203,122 @@ INDIRECT_TERMS = [
     "intersectionality", "marginalized", "vulnerable communities",
     "indigenous", "indigenous knowledge", "traditional knowledge",
     
-    # --- Health & wellbeing ---
     "health", "human health", "planetary health",
     "wellbeing", "well-being", "public health", "one health",
     "environmental health", "occupational health",
     
-    # --- Community & social ---
     "community", "local community", "rural community",
     "urban community", "society", "social impact",
     "social innovation", "behavior change", "behavioural change",
     
-    # --- Economic & finance ---
     "green finance", "sustainable finance", "esg",
     "green bond", "green investment", "impact investment",
     "sustainable development", "sdg", "sustainable development goals",
     
-    # --- Education & capacity ---
     "education", "training", "capacity building", "literacy",
     "awareness", "skills development", "lifelong learning",
     
-    # --- Digital enablers ---
     "digital twin", "digitalization", "digital transition",
     "twin transition", "ai for sustainability",
     "data-driven", "open data", "open science",
     
-    # --- Bio-based ---
     "bio-based", "biobased", "bioeconomy", "bio-economy",
     "biotechnology", "synthetic biology",
 ]
 
 
 # =========================================================================
-# WORD-BOUNDARY PATTERN COMPILATION (FIX)
+# WORD-BOUNDARY PATTERN COMPILATION
 # =========================================================================
 def _compile_patterns(terms: List[str]) -> List[Tuple[str, Pattern]]:
-    """Pre-compile each term as a word-boundary regex.
-    
-    Word boundaries (\\b) prevent substring false positives:
-      ✗ Old: 'carbon' in 'carbonate' → True (wrong)
-      ✓ New: re.search(r'\\bcarbon\\b', 'carbonate') → None
-    
-    Hyphens are correctly handled because re.escape converts '-' to '\\-'
-    and \\b matches between word chars and non-word chars (including hyphens):
-      ✓ \\blow-carbon\\b matches 'low-carbon' but not 'ultralow-carbon'
-    """
+    """Pre-compile each term as a word-boundary regex."""
     return [(t, re.compile(r"\b" + re.escape(t) + r"\b")) for t in terms]
 
 
-# Compile once at module load (called once, used per-document)
 _GREEN_PATTERNS = _compile_patterns(GREEN_TERMS)
 _BLUE_PATTERNS = _compile_patterns(BLUE_TERMS)
 _INDIRECT_PATTERNS = _compile_patterns(INDIRECT_TERMS)
 
 
+# =========================================================================
+# CONFIDENCE COMPUTATION (NEW — system prompt aligned)
+# =========================================================================
+def _compute_confidence(direct_count: int, indirect_count: int, score: float) -> float:
+    """Confidence reflects how reliably we can claim Green/Blue alignment.
+    
+    System prompt says:
+      - score >= pass AND confidence < 0.7 → DOUBT
+      - score >= pass AND confidence >= 0.7 → PASS
+    
+    Heuristic:
+      - Direct hits weigh more than indirect (they are anchor terms)
+      - 5+ direct hits → very high confidence (0.95)
+      - 3+ direct hits → high confidence (0.80)
+      - 2 direct hits + indirect support → medium-high (0.70)
+      - 1 direct hit + indirect support → medium (0.55)
+      - Indirect-only → low (0.30)
+      - Nothing → 0.0
+    """
+    if direct_count >= 5:
+        conf = 0.95
+    elif direct_count >= 3:
+        conf = 0.80
+    elif direct_count == 2:
+        conf = 0.70 if indirect_count >= 2 else 0.60
+    elif direct_count == 1:
+        conf = 0.55 if indirect_count >= 3 else 0.45
+    elif indirect_count >= 3:
+        conf = 0.30
+    elif indirect_count >= 1:
+        conf = 0.20
+    else:
+        conf = 0.0
+    
+    return round(conf, 2)
+
+
+# =========================================================================
+# MAIN SCORING FUNCTION
+# =========================================================================
 def score_thematic(
     proposal_text: str,
     pass_threshold: float = 0.6,
-    doubt_threshold: float = 0.3,
+    doubt_threshold: float = 0.3,  # legacy, kept for backward compat
+    confidence_threshold: float = 0.7,  # NEW: system prompt aligned
     min_text_length: int = 300,
 ) -> Dict:
     """Return thematic relevance score + decision.
     
-    Parameters:
-      pass_threshold:  score >= this → PASS
-      doubt_threshold: score >= this AND < pass_threshold → DOUBT
-      min_text_length: under this many chars → INSUFFICIENT_EVIDENCE
+    Decision logic (system prompt aligned):
+      score < pass_threshold       → FAIL
+      score >= pass AND conf < 0.7 → DOUBT
+      score >= pass AND conf >= 0.7 → PASS
     
-    Codex #6 fix: weak signals → DOUBT (not auto-FAIL).
-    Hard FAIL only when text is meaningful AND ZERO anchors found.
-    
-    FIX (score cap): combined score clamped to [0.0, 1.0] so *100 conversion
-    in the export layer can never exceed 100.
-    
-    FIX (word-boundary): substring matching replaced with \\b regex matching
-    to prevent false positives (e.g., 'mpa' matching 'MPa' pressure unit,
-    'carbon' matching 'carbonate', 'ev' matching 'every').
+    FIX history:
+      - Score capped at [0.0, 1.0]
+      - Word-boundary regex (no substring FP)
+      - Confidence-based DOUBT (NEW, system prompt aligned)
     """
     text = (proposal_text or "").strip()
     
     if len(text) < min_text_length:
         return {
             "score": 0.0,
+            "confidence": 0.0,
             "decision": "INSUFFICIENT_EVIDENCE",
             "green_hits": [],
             "blue_hits": [],
             "indirect_hits": [],
             "evidence": f"Proposal text too short ({len(text)} chars) — possibly image-based, OCR may be required",
-            "thresholds_used": {"pass": pass_threshold, "doubt": doubt_threshold}
+            "thresholds_used": {
+                "pass": pass_threshold,
+                "doubt": doubt_threshold,
+                "confidence": confidence_threshold,
+            }
         }
     
     text_lower = text.lower()
     
-    # FIX: word-boundary regex matching (replaces simple `t in text_lower`)
     green_hits = sorted({t for t, pat in _GREEN_PATTERNS if pat.search(text_lower)})
     blue_hits = sorted({t for t, pat in _BLUE_PATTERNS if pat.search(text_lower)})
     indirect_hits = sorted({t for t, pat in _INDIRECT_PATTERNS if pat.search(text_lower)})
@@ -318,27 +328,43 @@ def score_thematic(
     
     direct_score = min(1.0, direct_count * 0.15)
     indirect_score = min(0.4, indirect_count * 0.06)
-    
-    # FIX: clamp combined score to [0.0, 1.0]
     score = round(min(1.0, direct_score + indirect_score), 2)
+    
+    # NEW: compute confidence per system prompt
+    confidence = _compute_confidence(direct_count, indirect_count, score)
     
     total_hits = direct_count + indirect_count
     
-    if score >= pass_threshold:
-        decision = "PASS"
-    elif score >= doubt_threshold:
-        decision = "DOUBT"
-    elif total_hits >= 1:
-        decision = "DOUBT"
+    # NEW: decision logic per system prompt
+    if score < pass_threshold:
+        # Below pass: still allow DOUBT for weak signals (Codex #6)
+        if score >= doubt_threshold:
+            decision = "DOUBT"
+        elif total_hits >= 1:
+            decision = "DOUBT"
+        else:
+            decision = "FAIL"
     else:
-        decision = "FAIL"
+        # At or above pass: confidence determines PASS vs DOUBT (system prompt rule)
+        if confidence >= confidence_threshold:
+            decision = "PASS"
+        else:
+            decision = "DOUBT"
     
     return {
         "score": score,
+        "confidence": confidence,
         "decision": decision,
         "green_hits": green_hits,
         "blue_hits": blue_hits,
         "indirect_hits": indirect_hits,
-        "evidence": f"Direct: {direct_count} | Indirect: {indirect_count}",
-        "thresholds_used": {"pass": pass_threshold, "doubt": doubt_threshold}
+        "evidence": (
+            f"Direct: {direct_count} | Indirect: {indirect_count} | "
+            f"Score: {score} | Confidence: {confidence}"
+        ),
+        "thresholds_used": {
+            "pass": pass_threshold,
+            "doubt": doubt_threshold,
+            "confidence": confidence_threshold,
+        }
     }
